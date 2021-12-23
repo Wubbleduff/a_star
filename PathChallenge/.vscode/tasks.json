@@ -6,7 +6,8 @@
             "command": "cl.exe",
             "args": [
                 "/EHsc", "/nologo",
-                "/O2", "/arch:AVX2",
+                //"/O2", "/arch:AVX2",
+                "/Z7",
                 "/Fe:", "pathchallenge.exe",
                 "${workspaceFolder}\\*.cpp",
             ],
