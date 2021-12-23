@@ -1,0 +1,6 @@
+
+*.obj
+*.exe
+
+SDL2-devel-2.0.18-VC/
+sdl/

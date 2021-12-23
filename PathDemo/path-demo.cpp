@@ -10,8 +10,11 @@
 #include <cmath>
 #include <initializer_list>
 #include <random>
-#include <SDL.h>
+#include "SDL.h"
 #include <tuple>
+
+#include <algorithm>
+#include <windows.h>
 
 using U8 = Uint8;
 using U32 = Uint32;
@@ -109,14 +112,14 @@ protected:
 };
 
 /// RGB to ARGB8888
-struct RGB
+struct myRGB
 {
-    RGB(U8 r, U8 g, U8 b) : m_u((U32(r) << 16) | (U32(g) << 8) | U32(b)) {}
+    myRGB(U8 r, U8 g, U8 b) : m_u((U32(r) << 16) | (U32(g) << 8) | U32(b)) {}
     U32 m_u;
 };
 
 /// draw a cell into the pixel buffer
-static void DrawCell(U32* pPix, RGB rgb, U32 x, U32 y)
+static void DrawCell(U32* pPix, myRGB rgb, U32 x, U32 y)
 {
     for (U32 i = y * kCellSize; i < y * kCellSize + kCellSize - 1; ++i)
     {
@@ -133,7 +136,10 @@ static double Heuristic(U32 x1, U32 y1, U32 x2, U32 y2)
     const double diffX = std::fabs(double(x1) - double(x2));
     const double diffY = std::fabs(double(y1) - double(y2));
 
-    return 0.4142135623730951 * std::min(diffX, diffY) + std::max(diffX, diffY);
+    double n = (diffX < diffY) ? diffX : diffY;
+    double m = (diffX > diffY) ? diffX : diffY;
+
+    return 0.4142135623730951 * n + m;
 }
 
 /// Pathfinder state machine
@@ -568,7 +574,8 @@ static void ProcessMouse(U64* pWalls)
     }
 }
 
-int main(int, char**)
+//int main(int, char**)
+INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdLine, INT nCmdShow)
 {
     SDL_Window* pWindow = SDL_CreateWindow("Pathfind", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, kWidth, kHeight, SDL_WINDOW_HIDDEN);
     SDL_Renderer* pRenderer = SDL_CreateRenderer(pWindow, -1, SDL_RENDERER_ACCELERATED/* | SDL_RENDERER_PRESENTVSYNC*/);

@@ -38,6 +38,7 @@ static constexpr U32 kEndI = kEndY * kCols + kEndX;
 float FastPathFind(const U64* pWalls)
 {
     std::vector<U32> m_openSet;
+    m_openSet.reserve(1000);
     std::unordered_set<U32> m_visited;
     double m_f[kCells];
 
