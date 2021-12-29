@@ -8,6 +8,9 @@
 *******************************************************************/
 
 #include <vector>
+#include <intrin.h>
+
+#include <deque>
 
 using U32 = uint32_t;
 using U64 = uint64_t;
@@ -40,6 +43,18 @@ struct v2
     bool operator==(const v2 &other) const { return x == other.x && y == other.y; }
     bool operator!=(const v2 &other) const { return !(*this == other); }
 };
+
+struct PerfStats
+{
+    // Stats
+    U64 iterations;
+
+    U32 open_list_count;
+
+    std::deque<U64> find_cheapest_latencies;
+    std::deque<U64> explore_neighbor_latencies;
+};
+static PerfStats perf_stats;
 
 #define ABS(a) ((a) < 0) ? -a : a
 #define MIN(a, b) ((a) < (b)) ? (a) : (b)
@@ -108,9 +123,34 @@ void print_world(const U64 *walls, const double *g_scores)
     printf("\n\n\n");
 }
 
-void verify(const U64 *walls, double *g_scores)
+void post_process()
 {
-    //print_world(walls, g_scores);
+    if(perf_stats.iterations % 10 == 0)
+    {
+        printf("\n");
+
+        {
+            U64 sum = 0;
+            U64 min_latency = ~0;
+            U64 max_latency = 0;
+            for(U64 latency : perf_stats.find_cheapest_latencies)
+            {
+                sum += latency;
+                min_latency = MIN(min_latency, latency);
+                max_latency = MAX(max_latency, latency);
+            }
+
+            printf("find cheapest\n");
+            printf("    mean: %f\n", (float)sum / perf_stats.find_cheapest_latencies.size());
+            printf("    min: %I64i\n", min_latency);
+            printf("    max: %I64i\n", max_latency);
+
+            while(perf_stats.find_cheapest_latencies.size() >= 1000)
+            {
+                perf_stats.find_cheapest_latencies.pop_front();
+            }
+        }
+    }
 }
 
 
@@ -119,6 +159,7 @@ void verify(const U64 *walls, double *g_scores)
 /// your code goes here!
 float FastPathFind(const U64* pWalls)
 {
+
     // Initialize grid
     double g_scores[kCols * kRows] = {};
     double f_scores[kCols * kRows] = {};
@@ -140,8 +181,13 @@ float FastPathFind(const U64* pWalls)
     g_scores[start.index()] = 0.0f;
     f_scores[start.index()] = heuristic(open_list[0], target);
 
+
+
     while(!open_list.empty())
     {
+        U64 find_cheapest_time = __rdtsc();
+        perf_stats.open_list_count += open_list.size();
+
         // Find the cheapest node on the open list
         v2 current = open_list[0];
         for(const v2 &node : open_list)
@@ -155,16 +201,20 @@ float FastPathFind(const U64* pWalls)
         for(v2 &node : open_list) if(node == current) { std::swap(node, open_list.back()); break; }
         open_list.pop_back();
 
+        perf_stats.find_cheapest_latencies.push_back(__rdtsc() - find_cheapest_time);
+
         // Check if done
         if(current == target)
         {
+            post_process();
             return g_scores[current.index()];
         }
 
+        U64 explore_neighbor_time = __rdtsc();
         for(const v2 neighbor : std::vector<v2>
-            {{current.x - 1, current.y + 1}, {current.x    , current.y + 1}, {current.x + 1, current.y + 1},
-             {current.x - 1, current.y    },                                 {current.x + 1, current.y    },
-             {current.x - 1, current.y - 1}, {current.x    , current.y - 1}, {current.x + 1, current.y - 1}})
+            {{current.x - 1, current.y + 1}, {current.x, current.y + 1}, {current.x + 1, current.y + 1},
+             {current.x - 1, current.y    },                             {current.x + 1, current.y    },
+             {current.x - 1, current.y - 1}, {current.x, current.y - 1}, {current.x + 1, current.y - 1}})
         {
             if(neighbor.x >= kCols || neighbor.y >= kRows || is_wall(neighbor, pWalls))
             {
@@ -195,9 +245,12 @@ float FastPathFind(const U64* pWalls)
                 }
             }
         }
+        perf_stats.explore_neighbor_latencies.push_back(__rdtsc() - explore_neighbor_time);
+
+        perf_stats.iterations++;
     }
 
-    verify(pWalls, g_scores);
+    post_process();
     return -1.0;
 }
 
