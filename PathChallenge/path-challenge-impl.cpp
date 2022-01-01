@@ -11,6 +11,9 @@
 #include <intrin.h>
 
 #include <deque>
+#include <assert.h>
+
+#include <windows.h>
 
 using U32 = uint32_t;
 using U64 = uint64_t;
@@ -44,15 +47,26 @@ struct v2
     bool operator!=(const v2 &other) const { return !(*this == other); }
 };
 
+struct Node
+{
+    v2 pos;
+    double f_score;
+};
+
 struct PerfStats
 {
     // Stats
-    U64 iterations;
+    U64 iterations = 0;
 
-    U32 open_list_count;
+    U32 open_list_count = 0;
 
-    std::deque<U64> find_cheapest_latencies;
-    std::deque<U64> explore_neighbor_latencies;
+    std::deque<U64> find_cheapest_latencies = {};
+    std::deque<U64> explore_neighbor_latencies = {};
+
+    double min_f_score = 1000000000000.0;
+    double max_f_score = 0.0;
+    double sum_f_score = 0.0;
+    U32 cnt_f_score = 0;
 };
 static PerfStats perf_stats;
 
@@ -63,7 +77,9 @@ double heuristic(v2 a, v2 b)
 {
     int xDiff = ABS(a.x - b.x);
     int yDiff = ABS(a.y - b.y);
-    return MIN(xDiff, yDiff) * SQRT_2 + MAX(xDiff, yDiff) - MIN(xDiff, yDiff);
+    // double result = MIN(xDiff, yDiff) * SQRT_2 + MAX(xDiff, yDiff) - MIN(xDiff, yDiff);
+    // return ABS(result);
+    return sqrt(xDiff*xDiff + yDiff*yDiff);
 }
 
 bool is_wall(v2 node, const U64 *walls)
@@ -73,6 +89,136 @@ bool is_wall(v2 node, const U64 *walls)
     U64 mask = 1ULL << (node.index() % 64);
     return wall_chunk_bits & mask;
 }
+
+#define BUCKETS
+#ifdef BUCKETS
+
+#define NUM_BUCKETS 2048
+#define BUCKET_SIZE 1024
+struct OpenList
+{
+    struct Bucket
+    {
+        Node nodes[BUCKET_SIZE] = {};
+        U32 size = 0;
+    };
+
+    Bucket buckets[NUM_BUCKETS] = {};
+    U32 cheapest_bucket = (U32)-1;
+};
+
+void open_list_push(OpenList *open_list, Node node)
+{
+    U32 bucket_index = (U32)(node.f_score * 2.0);
+    assert(bucket_index < NUM_BUCKETS);
+
+    OpenList::Bucket *bucket = &(open_list->buckets[bucket_index]);
+    assert(bucket->size + 1 < BUCKET_SIZE);
+
+    bool found_on_list = false;
+    for(U32 i = 0; i < bucket->size; i++)
+    {
+        if(bucket->nodes[i].pos == node.pos)
+        {
+            found_on_list = true;
+            bucket->nodes[i].f_score = node.f_score;
+            break;
+        }
+    }
+
+    if(!found_on_list)
+    {
+        bucket->nodes[bucket->size++] = node;
+        open_list->cheapest_bucket = MIN(open_list->cheapest_bucket, bucket_index);
+    }
+}
+
+Node open_list_pop(OpenList *open_list)
+{
+    OpenList::Bucket *bucket = &(open_list->buckets[open_list->cheapest_bucket]);
+
+    Node result = bucket->nodes[0];
+    U32 result_i = 0;
+    for(U32 i = 1; i < bucket->size; i++)
+    {
+        if(bucket->nodes[i].f_score < result.f_score)
+        {
+            result = bucket->nodes[i];
+            result_i = i;
+        }
+    }
+    std::swap(bucket->nodes[result_i], bucket->nodes[bucket->size - 1]);
+    bucket->size--;
+
+    assert(bucket->size <= BUCKET_SIZE);
+
+    if(bucket->size == 0)
+    {
+        while(open_list->buckets[open_list->cheapest_bucket].size == 0)
+        {
+            open_list->cheapest_bucket++;
+            if(open_list->cheapest_bucket == NUM_BUCKETS)
+            {
+                open_list->cheapest_bucket = (U32)-1;
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
+bool open_list_is_empty(OpenList *open_list)
+{
+    return open_list->cheapest_bucket == (U32)-1;
+}
+#else
+struct OpenList
+{
+    std::vector<Node> nodes;
+};
+
+void open_list_push(OpenList *open_list, Node to_push)
+{
+    bool found_on_open_list = false;
+    for(Node &node : open_list->nodes)
+    {
+        if(node.pos == to_push.pos)
+        {
+            found_on_open_list = true;
+            node.f_score = to_push.f_score;
+            break;
+        }
+    }
+    if(!found_on_open_list)
+    {
+        open_list->nodes.push_back(to_push);
+    }
+}
+
+Node open_list_pop(OpenList *open_list)
+{
+    Node current = open_list->nodes[0];
+    for(const Node &node : open_list->nodes)
+    {
+        if(node.f_score < current.f_score)
+        {
+            current = node;
+        }
+    }
+    // Remove current from the open list
+    for(Node &node : open_list->nodes) if(node.pos == current.pos) { std::swap(node, open_list->nodes.back()); break; }
+    open_list->nodes.pop_back();
+
+    return current;
+}
+
+bool open_list_is_empty(OpenList *open_list)
+{
+    return open_list->nodes.empty();
+}
+#endif
+
 
 #if 1
 
@@ -125,32 +271,37 @@ void print_world(const U64 *walls, const double *g_scores)
 
 void post_process()
 {
-    if(perf_stats.iterations % 10 == 0)
+#if 0
+    printf("\n");
+
+    U64 sum = 0;
+    U64 min_latency = ~0;
+    U64 max_latency = 0;
+    for(U64 latency : perf_stats.find_cheapest_latencies)
     {
-        printf("\n");
-
-        {
-            U64 sum = 0;
-            U64 min_latency = ~0;
-            U64 max_latency = 0;
-            for(U64 latency : perf_stats.find_cheapest_latencies)
-            {
-                sum += latency;
-                min_latency = MIN(min_latency, latency);
-                max_latency = MAX(max_latency, latency);
-            }
-
-            printf("find cheapest\n");
-            printf("    mean: %f\n", (float)sum / perf_stats.find_cheapest_latencies.size());
-            printf("    min: %I64i\n", min_latency);
-            printf("    max: %I64i\n", max_latency);
-
-            while(perf_stats.find_cheapest_latencies.size() >= 1000)
-            {
-                perf_stats.find_cheapest_latencies.pop_front();
-            }
-        }
+        sum += latency;
+        min_latency = MIN(min_latency, latency);
+        max_latency = MAX(max_latency, latency);
     }
+
+    printf("iterations: %I64i\n", perf_stats.iterations);
+    printf("find cheapest\n");
+    printf("    mean: %f\n", (float)sum / perf_stats.find_cheapest_latencies.size());
+    printf("    min: %I64i\n", min_latency);
+    printf("    max: %I64i\n", max_latency);
+    printf("min f score: %f\n", perf_stats.min_f_score);
+    printf("max f score: %f\n", perf_stats.max_f_score);
+    printf("avg f score: %f\n", perf_stats.sum_f_score / (double)perf_stats.cnt_f_score);
+
+    // while(perf_stats.find_cheapest_latencies.size() >= 1000)
+    // {
+    //     perf_stats.find_cheapest_latencies.pop_front();
+    // }
+
+    perf_stats = {};
+
+    Sleep(1000);
+#endif
 }
 
 
@@ -159,90 +310,66 @@ void post_process()
 /// your code goes here!
 float FastPathFind(const U64* pWalls)
 {
-
     // Initialize grid
     double g_scores[kCols * kRows] = {};
-    double f_scores[kCols * kRows] = {};
-    v2 came_from[kCols * kRows] = {};
     for(U32 r = 0; r < kRows; r++)
     {
         for(U32 c = 0; c < kCols; c++)
         {
             U32 i = v2{c, r}.index();
             g_scores[i] = SENTINEL;
-            f_scores[i] = SENTINEL;
-            came_from[i] = v2{(U32)-1, (U32)-1};
         }
     }
 
     v2 start = {kStartX, kStartY};
     v2 target = {kEndX, kEndY};
-    std::vector<v2> open_list = { {kStartX, kStartY} };
+    OpenList *open_list = new OpenList();
+    open_list_push(open_list, {start, heuristic(start, target)});
     g_scores[start.index()] = 0.0f;
-    f_scores[start.index()] = heuristic(open_list[0], target);
 
-
-
-    while(!open_list.empty())
+    while(!open_list_is_empty(open_list))
     {
         U64 find_cheapest_time = __rdtsc();
-        perf_stats.open_list_count += open_list.size();
 
         // Find the cheapest node on the open list
-        v2 current = open_list[0];
-        for(const v2 &node : open_list)
-        {
-            if(f_scores[node.index()] < f_scores[current.index()])
-            {
-                current = node;
-            }
-        }
-        // Remove current from the open list
-        for(v2 &node : open_list) if(node == current) { std::swap(node, open_list.back()); break; }
-        open_list.pop_back();
+        Node current = open_list_pop(open_list);
 
         perf_stats.find_cheapest_latencies.push_back(__rdtsc() - find_cheapest_time);
 
         // Check if done
-        if(current == target)
+        if(current.pos == target)
         {
             post_process();
-            return g_scores[current.index()];
+            return g_scores[current.pos.index()];
         }
 
         U64 explore_neighbor_time = __rdtsc();
-        for(const v2 neighbor : std::vector<v2>
-            {{current.x - 1, current.y + 1}, {current.x, current.y + 1}, {current.x + 1, current.y + 1},
-             {current.x - 1, current.y    },                             {current.x + 1, current.y    },
-             {current.x - 1, current.y - 1}, {current.x, current.y - 1}, {current.x + 1, current.y - 1}})
+        v2 neighbors[] =
+        {
+            {current.pos.x - 1, current.pos.y + 1}, {current.pos.x, current.pos.y + 1}, {current.pos.x + 1, current.pos.y + 1},
+            {current.pos.x - 1, current.pos.y    },                                     {current.pos.x + 1, current.pos.y    },
+            {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
+        };
+        for(const v2 neighbor : neighbors)
         {
             if(neighbor.x >= kCols || neighbor.y >= kRows || is_wall(neighbor, pWalls))
             {
                 continue;
             }
 
-            double neighbor_distance = ((neighbor.x == current.x) || (neighbor.y == current.y)) ? 1.0f : SQRT_2;
-            double neighbor_new_g_score = g_scores[current.index()] + neighbor_distance;
+            double neighbor_distance = ((neighbor.x == current.pos.x) || (neighbor.y == current.pos.y)) ? 1.0f : SQRT_2;
+            double neighbor_new_g_score = g_scores[current.pos.index()] + neighbor_distance;
 
             if(neighbor_new_g_score < g_scores[neighbor.index()])
             {
                 g_scores[neighbor.index()] = neighbor_new_g_score;
-                f_scores[neighbor.index()] = neighbor_new_g_score + heuristic(neighbor, target);
-                came_from[neighbor.index()] = current;
+                double f_score = neighbor_new_g_score + heuristic(neighbor, target);
+                open_list_push(open_list, {neighbor, f_score});
 
-                bool found_on_open_list = false;
-                for(v2 &node : open_list)
-                {
-                    if(node == neighbor)
-                    {
-                        found_on_open_list = true;
-                        break;
-                    }
-                }
-                if(!found_on_open_list)
-                {
-                    open_list.push_back(neighbor);
-                }
+                perf_stats.min_f_score = MIN(perf_stats.min_f_score, f_score);
+                perf_stats.max_f_score = MAX(perf_stats.max_f_score, f_score);
+                perf_stats.sum_f_score += f_score;
+                perf_stats.cnt_f_score += 1;
             }
         }
         perf_stats.explore_neighbor_latencies.push_back(__rdtsc() - explore_neighbor_time);
