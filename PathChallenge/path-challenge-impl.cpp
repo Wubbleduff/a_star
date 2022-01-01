@@ -59,6 +59,10 @@ struct PerfStats
     U64 iterations = 0;
 
     U32 open_list_count = 0;
+    U32 max_open_list_count = 0;
+
+    U32 max_bucket_size = 0;
+    U32 max_bucket_index = 0;
 
     std::deque<U64> find_cheapest_latencies = {};
     std::deque<U64> explore_neighbor_latencies = {};
@@ -94,7 +98,8 @@ bool is_wall(v2 node, const U64 *walls)
 #ifdef BUCKETS
 
 #define NUM_BUCKETS 2048
-#define BUCKET_SIZE 1024
+#define BUCKET_SIZE 512
+#define MIN_POSSIBLE_F_SCORE 223.0
 struct OpenList
 {
     struct Bucket
@@ -109,7 +114,7 @@ struct OpenList
 
 void open_list_push(OpenList *open_list, Node node)
 {
-    U32 bucket_index = (U32)(node.f_score * 2.0);
+    U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 5.0);
     assert(bucket_index < NUM_BUCKETS);
 
     OpenList::Bucket *bucket = &(open_list->buckets[bucket_index]);
@@ -130,6 +135,11 @@ void open_list_push(OpenList *open_list, Node node)
     {
         bucket->nodes[bucket->size++] = node;
         open_list->cheapest_bucket = MIN(open_list->cheapest_bucket, bucket_index);
+
+        perf_stats.open_list_count += 1;
+        perf_stats.max_open_list_count = MAX(perf_stats.max_open_list_count, perf_stats.open_list_count);
+        perf_stats.max_bucket_size = MAX(perf_stats.max_bucket_size, bucket->size);
+        perf_stats.max_bucket_index = MAX(perf_stats.max_bucket_index, bucket_index);
     }
 }
 
@@ -149,6 +159,8 @@ Node open_list_pop(OpenList *open_list)
     }
     std::swap(bucket->nodes[result_i], bucket->nodes[bucket->size - 1]);
     bucket->size--;
+
+    perf_stats.open_list_count -= 1;
 
     assert(bucket->size <= BUCKET_SIZE);
 
@@ -194,6 +206,9 @@ void open_list_push(OpenList *open_list, Node to_push)
     {
         open_list->nodes.push_back(to_push);
     }
+    
+    perf_stats.open_list_count = open_list->nodes.size();
+    perf_stats.max_open_list_count = MAX(perf_stats.max_open_list_count, perf_stats.open_list_count);
 }
 
 Node open_list_pop(OpenList *open_list)
@@ -209,6 +224,8 @@ Node open_list_pop(OpenList *open_list)
     // Remove current from the open list
     for(Node &node : open_list->nodes) if(node.pos == current.pos) { std::swap(node, open_list->nodes.back()); break; }
     open_list->nodes.pop_back();
+
+    perf_stats.open_list_count = open_list->nodes.size();
 
     return current;
 }
@@ -271,7 +288,7 @@ void print_world(const U64 *walls, const double *g_scores)
 
 void post_process()
 {
-#if 0
+#if 1
     printf("\n");
 
     U64 sum = 0;
@@ -285,6 +302,7 @@ void post_process()
     }
 
     printf("iterations: %I64i\n", perf_stats.iterations);
+    printf("open list max: %i\n", perf_stats.max_open_list_count);
     printf("find cheapest\n");
     printf("    mean: %f\n", (float)sum / perf_stats.find_cheapest_latencies.size());
     printf("    min: %I64i\n", min_latency);
@@ -292,6 +310,8 @@ void post_process()
     printf("min f score: %f\n", perf_stats.min_f_score);
     printf("max f score: %f\n", perf_stats.max_f_score);
     printf("avg f score: %f\n", perf_stats.sum_f_score / (double)perf_stats.cnt_f_score);
+    printf("max bucket_size: %i\n", perf_stats.max_bucket_size);
+    printf("max bucket_index: %i\n", perf_stats.max_bucket_index);
 
     // while(perf_stats.find_cheapest_latencies.size() >= 1000)
     // {
