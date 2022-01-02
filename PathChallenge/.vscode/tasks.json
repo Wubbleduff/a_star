@@ -1,13 +1,14 @@
 {
     "tasks": [
         {
-            "type": "cppbuild",
+            "type": "shell",
             "label": "C/C++: cl.exe build active file",
             "command": "cl.exe",
             "args": [
                 "/EHsc", "/nologo",
-                "/O2", "/arch:AVX2",
-                //"/Z7",
+                "/O2",
+                "/arch:AVX2",
+                "/Z7",
                 "/Fe:", "pathchallenge.exe",
                 "${workspaceFolder}\\*.cpp",
             ],

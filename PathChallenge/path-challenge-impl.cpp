@@ -67,6 +67,8 @@ struct PerfStats
     std::deque<U64> find_cheapest_latencies = {};
     std::deque<U64> explore_neighbor_latencies = {};
 
+    U64 initialize_latency = 0;
+
     double min_f_score = 1000000000000.0;
     double max_f_score = 0.0;
     double sum_f_score = 0.0;
@@ -97,24 +99,24 @@ bool is_wall(v2 node, const U64 *walls)
 #define BUCKETS
 #ifdef BUCKETS
 
-#define NUM_BUCKETS 2048
+#define NUM_BUCKETS 5120
 #define BUCKET_SIZE 512
 #define MIN_POSSIBLE_F_SCORE 223.0
 struct OpenList
 {
     struct Bucket
     {
-        Node nodes[BUCKET_SIZE] = {};
-        U32 size = 0;
+        Node nodes[BUCKET_SIZE];
+        U32 size;
     };
 
-    Bucket buckets[NUM_BUCKETS] = {};
-    U32 cheapest_bucket = (U32)-1;
+    Bucket buckets[NUM_BUCKETS];
+    U32 cheapest_bucket;
 };
 
 void open_list_push(OpenList *open_list, Node node)
 {
-    U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 5.0);
+    U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 10.0);
     assert(bucket_index < NUM_BUCKETS);
 
     OpenList::Bucket *bucket = &(open_list->buckets[bucket_index]);
@@ -149,6 +151,7 @@ Node open_list_pop(OpenList *open_list)
 
     Node result = bucket->nodes[0];
     U32 result_i = 0;
+    #if 0
     for(U32 i = 1; i < bucket->size; i++)
     {
         if(bucket->nodes[i].f_score < result.f_score)
@@ -157,6 +160,7 @@ Node open_list_pop(OpenList *open_list)
             result_i = i;
         }
     }
+    #endif
     std::swap(bucket->nodes[result_i], bucket->nodes[bucket->size - 1]);
     bucket->size--;
 
@@ -178,6 +182,15 @@ Node open_list_pop(OpenList *open_list)
     }
 
     return result;
+}
+
+void open_list_clear(OpenList *open_list)
+{
+    open_list->cheapest_bucket = (U32)-1;
+    for(U32 i = 0; i < NUM_BUCKETS; i++)
+    {
+        open_list->buckets[i].size = 0;
+    }
 }
 
 bool open_list_is_empty(OpenList *open_list)
@@ -228,6 +241,11 @@ Node open_list_pop(OpenList *open_list)
     perf_stats.open_list_count = open_list->nodes.size();
 
     return current;
+}
+
+void open_list_clear(OpenList *open_list)
+{
+    open_list->nodes.clear();
 }
 
 bool open_list_is_empty(OpenList *open_list)
@@ -288,7 +306,7 @@ void print_world(const U64 *walls, const double *g_scores)
 
 void post_process()
 {
-#if 1
+#if 0
     printf("\n");
 
     U64 sum = 0;
@@ -303,6 +321,7 @@ void post_process()
 
     printf("iterations: %I64i\n", perf_stats.iterations);
     printf("open list max: %i\n", perf_stats.max_open_list_count);
+    printf("initialize latency  %I64i\n", perf_stats.initialize_latency);
     printf("find cheapest\n");
     printf("    mean: %f\n", (float)sum / perf_stats.find_cheapest_latencies.size());
     printf("    min: %I64i\n", min_latency);
@@ -330,6 +349,8 @@ void post_process()
 /// your code goes here!
 float FastPathFind(const U64* pWalls)
 {
+    U64 initialize_time = __rdtsc();
+
     // Initialize grid
     double g_scores[kCols * kRows] = {};
     for(U32 r = 0; r < kRows; r++)
@@ -343,9 +364,18 @@ float FastPathFind(const U64* pWalls)
 
     v2 start = {kStartX, kStartY};
     v2 target = {kEndX, kEndY};
-    OpenList *open_list = new OpenList();
+
+    static OpenList *open_list = nullptr;
+    if(!open_list)
+    {
+        open_list = new OpenList();
+    }
+    open_list_clear(open_list);
+
     open_list_push(open_list, {start, heuristic(start, target)});
     g_scores[start.index()] = 0.0f;
+
+    perf_stats.initialize_latency = __rdtsc() - initialize_time;
 
     while(!open_list_is_empty(open_list))
     {
