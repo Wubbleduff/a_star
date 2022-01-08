@@ -55,8 +55,8 @@ struct PerfStats
     U32 max_bucket_size = 0;
     U32 max_bucket_index = 0;
 
-    std::deque<U64> find_cheapest_latencies = {};
-    std::deque<U64> explore_neighbor_latencies = {};
+    std::deque<U64> pop_latencies = {};
+    std::deque<U64> push_latencies = {};
 
     U64 initialize_latency = 0;
 
@@ -102,6 +102,8 @@ struct OpenList
 
 void open_list_push(OpenList *open_list, Node node)
 {
+    U64 start_time = __rdtsc();
+
     U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 50.0);
 
     if(bucket_index >= open_list->buckets.size())
@@ -127,10 +129,14 @@ void open_list_push(OpenList *open_list, Node node)
         bucket->nodes.push_back(node);
         open_list->cheapest_bucket = MIN(open_list->cheapest_bucket, bucket_index);
     }
+
+    // perf_stats.push_latencies.push_back(__rdtsc() - start_time);
 }
 
 Node open_list_pop(OpenList *open_list)
 {
+    U64 start_time = __rdtsc();
+
     OpenList::Bucket *bucket = &(open_list->buckets[open_list->cheapest_bucket]);
 
 #if 0
@@ -151,6 +157,8 @@ Node open_list_pop(OpenList *open_list)
     Node result = bucket->nodes.back();
     bucket->nodes.pop_back();
 
+    perf_stats.open_list_count--;
+
     if(bucket->nodes.empty())
     {
         while(open_list->buckets[open_list->cheapest_bucket].nodes.empty())
@@ -163,7 +171,8 @@ Node open_list_pop(OpenList *open_list)
             }
         }
     }
-
+    
+    // perf_stats.pop_latencies.push_back(__rdtsc() - start_time);
     return result;
 }
 
@@ -240,34 +249,49 @@ void post_process()
 {
 #if 0
     printf("\n");
-
-    U64 sum = 0;
-    U64 min_latency = ~0;
-    U64 max_latency = 0;
-    for(U64 latency : perf_stats.find_cheapest_latencies)
-    {
-        sum += latency;
-        min_latency = MIN(min_latency, latency);
-        max_latency = MAX(max_latency, latency);
-    }
-
     printf("iterations: %I64i\n", perf_stats.iterations);
     printf("open list max: %i\n", perf_stats.max_open_list_count);
-    printf("initialize latency  %I64i\n", perf_stats.initialize_latency);
-    printf("find cheapest\n");
-    printf("    mean: %f\n", (float)sum / perf_stats.find_cheapest_latencies.size());
-    printf("    min: %I64i\n", min_latency);
-    printf("    max: %I64i\n", max_latency);
-    printf("min f score: %f\n", perf_stats.min_f_score);
-    printf("max f score: %f\n", perf_stats.max_f_score);
-    printf("avg f score: %f\n", perf_stats.sum_f_score / (double)perf_stats.cnt_f_score);
-    printf("max bucket_size: %i\n", perf_stats.max_bucket_size);
-    printf("max bucket_index: %i\n", perf_stats.max_bucket_index);
 
-    // while(perf_stats.find_cheapest_latencies.size() >= 1000)
-    // {
-    //     perf_stats.find_cheapest_latencies.pop_front();
-    // }
+    {
+        U64 sum = 0;
+        U64 min_latency = ~0;
+        U64 max_latency = 0;
+        for(U64 latency : perf_stats.pop_latencies)
+        {
+            sum += latency;
+            min_latency = MIN(min_latency, latency);
+            max_latency = MAX(max_latency, latency);
+        }
+        printf("pop latency\n");
+        printf("    mean: %f\n", (float)sum / perf_stats.pop_latencies.size());
+        printf("    min: %I64i\n", min_latency);
+        printf("    max: %I64i\n", max_latency);
+    }
+
+    {
+        U64 sum = 0;
+        U64 min_latency = ~0;
+        U64 max_latency = 0;
+        for(U64 latency : perf_stats.push_latencies)
+        {
+            sum += latency;
+            min_latency = MIN(min_latency, latency);
+            max_latency = MAX(max_latency, latency);
+        }
+        printf("push latency\n");
+        printf("    mean: %f\n", (float)sum / perf_stats.push_latencies.size());
+        printf("    min: %I64i\n", min_latency);
+        printf("    max: %I64i\n", max_latency);
+    }
+
+    while(perf_stats.pop_latencies.size() >= 1000)
+    {
+        perf_stats.pop_latencies.pop_front();
+    }
+    while(perf_stats.push_latencies.size() >= 1000)
+    {
+        perf_stats.push_latencies.pop_front();
+    }
 
     perf_stats = {};
 
@@ -279,8 +303,6 @@ void post_process()
 /// your code goes here!
 float FastPathFind(const U64* pWalls)
 {
-    U64 initialize_time = __rdtsc();
-
     // Initialize grid
     double g_scores[kCols * kRows] = {};
     for(U32 r = 0; r < kRows; r++)
@@ -307,8 +329,6 @@ float FastPathFind(const U64* pWalls)
 
     while(!open_list_is_empty(open_list))
     {
-        U64 find_cheapest_time = __rdtsc();
-
         // Find the cheapest node on the open list
         Node current = open_list_pop(open_list);
 
@@ -319,15 +339,15 @@ float FastPathFind(const U64* pWalls)
             return g_scores[current.pos.index()];
         }
 
-        U64 explore_neighbor_time = __rdtsc();
         v2 neighbors[] =
         {
             {current.pos.x - 1, current.pos.y + 1}, {current.pos.x, current.pos.y + 1}, {current.pos.x + 1, current.pos.y + 1},
             {current.pos.x - 1, current.pos.y    },                                     {current.pos.x + 1, current.pos.y    },
             {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
         };
-        for(const v2 neighbor : neighbors)
+        for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
+            const v2 &neighbor = neighbors[neighbor_index];
             if(neighbor.x >= kCols || neighbor.y >= kRows || is_wall(neighbor, pWalls))
             {
                 continue;
