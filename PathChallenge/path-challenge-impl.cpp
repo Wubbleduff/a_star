@@ -68,15 +68,13 @@ struct PerfStats
 };
 static PerfStats perf_stats;
 
-#define ABS(a) ((a) < 0) ? -a : a
 #define MIN(a, b) ((a) < (b)) ? (a) : (b)
 #define MAX(a, b) ((a) > (b)) ? (a) : (b)
 double heuristic(v2 a, v2 b)
 {
-    int xDiff = ABS(a.x - b.x);
-    int yDiff = ABS(a.y - b.y);
-    double result = sqrt(xDiff*xDiff + yDiff*yDiff);
-    return result;
+    int diff_x = a.x - b.x;
+    int diff_y = a.y - b.y;
+    return sqrt(diff_x*diff_x + diff_y*diff_y);
 }
 
 #define BUCKETS 1
@@ -437,47 +435,25 @@ float FastPathFind(const U64* pWalls)
             1.0,         1.0,
             SQRT_2, 1.0, SQRT_2
         };
-        bool neighbor_checks[8] = {};
-        double neighbor_g_scores[8] = {};
-        double neighbor_f_scores[8] = {};
         for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
             const v2 &neighbor = neighbors[neighbor_index];
-
-            bool neighbor_oob_cols = neighbor.x >= kCols;
-            // compare 8 x values against 8 kCols
-            bool neighbor_oob_rows = neighbor.y >= kRows;
-            // compare 8 y values against 8 kRows
-
-            if(neighbor_oob_cols || neighbor_oob_rows)
+            if((neighbor.x >= kCols) || (neighbor.y >= kRows))
             {
                 continue;
             }
-
             U64 wall_chunk_bits = pWalls[neighbor.index() / 64];
             U64 mask = 1ULL << (neighbor.index() % 64);
-            bool neighbor_is_wall = wall_chunk_bits & mask;
-            
-            if(neighbor_is_wall)
+            if(wall_chunk_bits & mask)
             {
                 continue;
             }
-
-            neighbor_checks[neighbor_index] = true;
-            neighbor_g_scores[neighbor_index] = g_scores[current.pos.index()] + neighbor_distances[neighbor_index];
-            neighbor_f_scores[neighbor_index] = neighbor_g_scores[neighbor_index] + heuristic(neighbor, target);
-        }
-
-        for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
-        {
-            if(neighbor_checks[neighbor_index])
+            double g_score = g_scores[current.pos.index()] + neighbor_distances[neighbor_index];
+            if(g_score < g_scores[neighbor.index()])
             {
-                const v2 &neighbor = neighbors[neighbor_index];
-                if(neighbor_g_scores[neighbor_index] < g_scores[neighbor.index()])
-                {
-                    g_scores[neighbor.index()] = neighbor_g_scores[neighbor_index];
-                    open_list_push(open_list, {neighbor, neighbor_f_scores[neighbor_index]});
-                }
+                float f_score = g_score + heuristic(neighbor, target);
+                g_scores[neighbor.index()] = g_score;
+                open_list_push(open_list, {neighbor, f_score});
             }
         }
 #endif
