@@ -1,5 +1,6 @@
 #include <vector>
 #include <intrin.h>
+#include <immintrin.h>
 
 #include <deque>
 #include <assert.h>
@@ -74,19 +75,12 @@ double heuristic(v2 a, v2 b)
 {
     int xDiff = ABS(a.x - b.x);
     int yDiff = ABS(a.y - b.y);
-    return sqrt(xDiff*xDiff + yDiff*yDiff);
+    double result = sqrt(xDiff*xDiff + yDiff*yDiff);
+    return result;
 }
 
-bool is_wall(v2 node, const U64 *walls)
-{
-    // Find the chunk of bits that contains the wall and mask to find the wall.
-    U64 wall_chunk_bits = walls[node.index() / 64];
-    U64 mask = 1ULL << (node.index() % 64);
-    return wall_chunk_bits & mask;
-}
-
-#define BUCKETS
-#ifdef BUCKETS
+#define BUCKETS 1
+#if BUCKETS
 
 #define MIN_POSSIBLE_F_SCORE 200.0
 struct OpenList
@@ -339,30 +333,154 @@ float FastPathFind(const U64* pWalls)
             return g_scores[current.pos.index()];
         }
 
+#define WIDE 1
+#if WIDE
+        __m256d neighbor_distances_0 = _mm256_set_pd(1.0, SQRT_2, 1.0, SQRT_2);
+        __m256d neighbor_distances_1 = _mm256_set_pd(SQRT_2, 1.0, SQRT_2, 1.0);
+
+        __m256d current_g_score = _mm256_broadcast_sd(&(g_scores[current.pos.index()]));
+        __m256d neighbor_g_scores_0 = _mm256_add_pd(current_g_score, neighbor_distances_0);
+        __m256d neighbor_g_scores_1 = _mm256_add_pd(current_g_score, neighbor_distances_1);
+        
+        __m256d target_x = _mm256_set1_pd(target.x);
+        __m256d target_y = _mm256_set1_pd(target.y);
         v2 neighbors[] =
         {
             {current.pos.x - 1, current.pos.y + 1}, {current.pos.x, current.pos.y + 1}, {current.pos.x + 1, current.pos.y + 1},
             {current.pos.x - 1, current.pos.y    },                                     {current.pos.x + 1, current.pos.y    },
             {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
         };
+        __m256d neighbor_f_scores_0;
+        {
+            __m256d neighbors_x = _mm256_set_pd(neighbors[3].x, neighbors[2].x, neighbors[1].x, neighbors[0].x);
+            __m256d neighbors_y = _mm256_set_pd(neighbors[3].y, neighbors[2].y, neighbors[1].y, neighbors[0].y);
+            __m256d diff_x = _mm256_sub_pd(neighbors_x, target_x);
+            __m256d diff_y = _mm256_sub_pd(neighbors_y, target_y);
+            __m256d diff_x_sq = _mm256_mul_pd(diff_x, diff_x);
+            __m256d diff_y_sq = _mm256_mul_pd(diff_y, diff_y);
+            __m256d radicand = _mm256_add_pd(diff_x_sq, diff_y_sq);
+            neighbor_f_scores_0 = _mm256_sqrt_pd(radicand);
+            neighbor_f_scores_0 = _mm256_add_pd(neighbor_f_scores_0, neighbor_g_scores_0);
+        }
+        __m256d neighbor_f_scores_1;
+        {
+            __m256d neighbors_x = _mm256_set_pd(neighbors[7].x, neighbors[6].x, neighbors[5].x, neighbors[4].x);
+            __m256d neighbors_y = _mm256_set_pd(neighbors[7].y, neighbors[6].y, neighbors[5].y, neighbors[4].y);
+            __m256d diff_x = _mm256_sub_pd(neighbors_x, target_x);
+            __m256d diff_y = _mm256_sub_pd(neighbors_y, target_y);
+            __m256d diff_x_sq = _mm256_mul_pd(diff_x, diff_x);
+            __m256d diff_y_sq = _mm256_mul_pd(diff_y, diff_y);
+            __m256d radicand = _mm256_add_pd(diff_x_sq, diff_y_sq);
+            neighbor_f_scores_1 = _mm256_sqrt_pd(radicand);
+            neighbor_f_scores_1 = _mm256_add_pd(neighbor_f_scores_1, neighbor_g_scores_1);
+        }
+
+        // Serial part
+        bool neighbor_checks[8] = {};
         for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
             const v2 &neighbor = neighbors[neighbor_index];
-            if(neighbor.x >= kCols || neighbor.y >= kRows || is_wall(neighbor, pWalls))
+            bool neighbor_oob_cols = neighbor.x >= kCols;
+            bool neighbor_oob_rows = neighbor.y >= kRows;
+            if(neighbor_oob_cols || neighbor_oob_rows)
+            {
+                continue;
+            }
+            U64 wall_chunk_bits = pWalls[neighbor.index() / 64];
+            U64 mask = 1ULL << (neighbor.index() % 64);
+            bool neighbor_is_wall = wall_chunk_bits & mask;
+            
+            if(neighbor_is_wall)
+            {
+                continue;
+            }
+            neighbor_checks[neighbor_index] = true;
+        }
+        for(int neighbor_index = 0; neighbor_index < 4; neighbor_index++)
+        {
+            if(neighbor_checks[neighbor_index])
+            {
+                const v2 &neighbor = neighbors[neighbor_index];
+                double new_g_score = neighbor_g_scores_0.m256d_f64[neighbor_index];
+                if(new_g_score < g_scores[neighbor.index()])
+                {
+                    g_scores[neighbor.index()] = new_g_score;
+                    open_list_push(open_list, {neighbor, neighbor_f_scores_0.m256d_f64[neighbor_index]});
+                }
+            }
+        }
+        for(int neighbor_index = 4; neighbor_index < 8; neighbor_index++)
+        {
+            if(neighbor_checks[neighbor_index])
+            {
+                const v2 &neighbor = neighbors[neighbor_index];
+                double new_g_score = neighbor_g_scores_1.m256d_f64[neighbor_index - 4];
+                if(new_g_score < g_scores[neighbor.index()])
+                {
+                    g_scores[neighbor.index()] = new_g_score;
+                    open_list_push(open_list, {neighbor, neighbor_f_scores_1.m256d_f64[neighbor_index - 4]});
+                }
+            }
+        }
+#else
+        // Calculate neighbor positions
+        v2 neighbors[] =
+        {
+            {current.pos.x - 1, current.pos.y + 1}, {current.pos.x, current.pos.y + 1}, {current.pos.x + 1, current.pos.y + 1},
+            {current.pos.x - 1, current.pos.y    },                                     {current.pos.x + 1, current.pos.y    },
+            {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
+        };
+        // Calculate neighbor distances
+        double neighbor_distances[] =
+        {
+            SQRT_2, 1.0, SQRT_2, 
+            1.0,         1.0,
+            SQRT_2, 1.0, SQRT_2
+        };
+        bool neighbor_checks[8] = {};
+        double neighbor_g_scores[8] = {};
+        double neighbor_f_scores[8] = {};
+        for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
+        {
+            const v2 &neighbor = neighbors[neighbor_index];
+
+            bool neighbor_oob_cols = neighbor.x >= kCols;
+            // compare 8 x values against 8 kCols
+            bool neighbor_oob_rows = neighbor.y >= kRows;
+            // compare 8 y values against 8 kRows
+
+            if(neighbor_oob_cols || neighbor_oob_rows)
             {
                 continue;
             }
 
-            double neighbor_distance = ((neighbor.x == current.pos.x) || (neighbor.y == current.pos.y)) ? 1.0f : SQRT_2;
-            double neighbor_new_g_score = g_scores[current.pos.index()] + neighbor_distance;
-
-            if(neighbor_new_g_score < g_scores[neighbor.index()])
+            U64 wall_chunk_bits = pWalls[neighbor.index() / 64];
+            U64 mask = 1ULL << (neighbor.index() % 64);
+            bool neighbor_is_wall = wall_chunk_bits & mask;
+            
+            if(neighbor_is_wall)
             {
-                g_scores[neighbor.index()] = neighbor_new_g_score;
-                double f_score = neighbor_new_g_score + heuristic(neighbor, target);
-                open_list_push(open_list, {neighbor, f_score});
+                continue;
+            }
+
+            neighbor_checks[neighbor_index] = true;
+            neighbor_g_scores[neighbor_index] = g_scores[current.pos.index()] + neighbor_distances[neighbor_index];
+            neighbor_f_scores[neighbor_index] = neighbor_g_scores[neighbor_index] + heuristic(neighbor, target);
+        }
+
+        for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
+        {
+            if(neighbor_checks[neighbor_index])
+            {
+                const v2 &neighbor = neighbors[neighbor_index];
+                if(neighbor_g_scores[neighbor_index] < g_scores[neighbor.index()])
+                {
+                    g_scores[neighbor.index()] = neighbor_g_scores[neighbor_index];
+                    open_list_push(open_list, {neighbor, neighbor_f_scores[neighbor_index]});
+                }
             }
         }
+#endif
     }
 
     post_process();
