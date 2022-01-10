@@ -5,6 +5,7 @@
 #include <deque>
 #include <assert.h>
 
+#include <math.h>
 #include <windows.h>
 
 using U32 = uint32_t;
@@ -23,8 +24,8 @@ static constexpr U32 kCells = kRows * kCols;
 static constexpr U32 kStartI = kStartY * kCols + kStartX;
 static constexpr U32 kEndI = kEndY * kCols + kEndX;
 
-static const double SQRT_2 = 1.4142135623730951;
-static const double SENTINEL = 99999999.0;
+static const float SQRT_2 = 1.41421356f;
+static const float SENTINEL = 99999999.0f;
 
 struct v2
 {
@@ -42,7 +43,7 @@ struct v2
 struct Node
 {
     v2 pos;
-    double f_score;
+    float f_score;
 };
 
 struct PerfStats
@@ -61,26 +62,38 @@ struct PerfStats
 
     U64 initialize_latency = 0;
 
-    double min_f_score = 1000000000000.0;
-    double max_f_score = 0.0;
-    double sum_f_score = 0.0;
+    float min_f_score = 100000.0;
+    float max_f_score = 0.0;
+    float sum_f_score = 0.0;
     U32 cnt_f_score = 0;
 };
 static PerfStats perf_stats;
 
+//#define ABS(a) ((a < 0) ? (-a) : (a))
 #define MIN(a, b) ((a) < (b)) ? (a) : (b)
 #define MAX(a, b) ((a) > (b)) ? (a) : (b)
-double heuristic(v2 a, v2 b)
+float heuristic(v2 current, v2 target)
 {
-    int diff_x = a.x - b.x;
-    int diff_y = a.y - b.y;
-    return sqrt(diff_x*diff_x + diff_y*diff_y);
+#define OCTILE 0
+#if OCTILE 
+    int diff_x = current.x - target.x;
+    diff_x = (diff_x < 0) ? -diff_x : diff_x;
+    int diff_y = current.y - target.y;
+    diff_y = (diff_y < 0) ? -diff_y : diff_y;
+    float result = MIN(diff_x, diff_y) * SQRT_2 + MAX(diff_x, diff_y) - MIN(diff_x, diff_y);
+    return result;
+#else
+    int diff_x = current.x - target.x;
+    int diff_y = current.y - target.y;
+    float result = sqrtf(diff_x*diff_x + diff_y*diff_y);
+    return result;
+#endif
 }
 
 #define BUCKETS 1
 #if BUCKETS
 
-#define MIN_POSSIBLE_F_SCORE 200.0
+#define MIN_POSSIBLE_F_SCORE 200.0f
 struct OpenList
 {
     struct Bucket
@@ -96,7 +109,7 @@ void open_list_push(OpenList *open_list, Node node)
 {
     U64 start_time = __rdtsc();
 
-    U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 50.0);
+    U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 50.0f);
 
     if(bucket_index >= open_list->buckets.size())
     {
@@ -296,7 +309,8 @@ void post_process()
 float FastPathFind(const U64* pWalls)
 {
     // Initialize grid
-    double g_scores[kCols * kRows] = {};
+    float g_scores[kCols * kRows] = {};
+    v2 came_from[kCols * kRows] = {};
     for(U32 r = 0; r < kRows; r++)
     {
         for(U32 c = 0; c < kCols; c++)
@@ -325,56 +339,46 @@ float FastPathFind(const U64* pWalls)
         Node current = open_list_pop(open_list);
 
         // Check if done
+        // I believe we need to use doubles here to match the expected precision of the path length.
         if(current.pos == target)
         {
             post_process();
-            return g_scores[current.pos.index()];
+            double dist = 0.0;
+            while(current.pos != start)
+            {
+                v2 next = came_from[current.pos.index()];
+                dist += ((current.pos.x == next.x) || (current.pos.y == next.y)) ? 1.0 : SQRT_2;
+                current.pos = next;
+            }
+            return dist;
         }
 
 #define WIDE 1
 #if WIDE
-        __m256d neighbor_distances_0 = _mm256_set_pd(1.0, SQRT_2, 1.0, SQRT_2);
-        __m256d neighbor_distances_1 = _mm256_set_pd(SQRT_2, 1.0, SQRT_2, 1.0);
+        __m256 neighbor_distances = _mm256_set_ps(SQRT_2, 1.0f, SQRT_2, 1.0f, 1.0f, SQRT_2, 1.0f, SQRT_2);
 
-        __m256d current_g_score = _mm256_broadcast_sd(&(g_scores[current.pos.index()]));
-        __m256d neighbor_g_scores_0 = _mm256_add_pd(current_g_score, neighbor_distances_0);
-        __m256d neighbor_g_scores_1 = _mm256_add_pd(current_g_score, neighbor_distances_1);
+        __m256 current_g_score = _mm256_set1_ps(g_scores[current.pos.index()]);
+        __m256 neighbor_g_scores = _mm256_add_ps(current_g_score, neighbor_distances);
         
-        __m256d target_x = _mm256_set1_pd(target.x);
-        __m256d target_y = _mm256_set1_pd(target.y);
+        __m256 target_x = _mm256_set1_ps(target.x);
+        __m256 target_y = _mm256_set1_ps(target.y);
         v2 neighbors[] =
         {
             {current.pos.x - 1, current.pos.y + 1}, {current.pos.x, current.pos.y + 1}, {current.pos.x + 1, current.pos.y + 1},
             {current.pos.x - 1, current.pos.y    },                                     {current.pos.x + 1, current.pos.y    },
             {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
         };
-        __m256d neighbor_f_scores_0;
-        {
-            __m256d neighbors_x = _mm256_set_pd(neighbors[3].x, neighbors[2].x, neighbors[1].x, neighbors[0].x);
-            __m256d neighbors_y = _mm256_set_pd(neighbors[3].y, neighbors[2].y, neighbors[1].y, neighbors[0].y);
-            __m256d diff_x = _mm256_sub_pd(neighbors_x, target_x);
-            __m256d diff_y = _mm256_sub_pd(neighbors_y, target_y);
-            __m256d diff_x_sq = _mm256_mul_pd(diff_x, diff_x);
-            __m256d diff_y_sq = _mm256_mul_pd(diff_y, diff_y);
-            __m256d radicand = _mm256_add_pd(diff_x_sq, diff_y_sq);
-            neighbor_f_scores_0 = _mm256_sqrt_pd(radicand);
-            neighbor_f_scores_0 = _mm256_add_pd(neighbor_f_scores_0, neighbor_g_scores_0);
-        }
-        __m256d neighbor_f_scores_1;
-        {
-            __m256d neighbors_x = _mm256_set_pd(neighbors[7].x, neighbors[6].x, neighbors[5].x, neighbors[4].x);
-            __m256d neighbors_y = _mm256_set_pd(neighbors[7].y, neighbors[6].y, neighbors[5].y, neighbors[4].y);
-            __m256d diff_x = _mm256_sub_pd(neighbors_x, target_x);
-            __m256d diff_y = _mm256_sub_pd(neighbors_y, target_y);
-            __m256d diff_x_sq = _mm256_mul_pd(diff_x, diff_x);
-            __m256d diff_y_sq = _mm256_mul_pd(diff_y, diff_y);
-            __m256d radicand = _mm256_add_pd(diff_x_sq, diff_y_sq);
-            neighbor_f_scores_1 = _mm256_sqrt_pd(radicand);
-            neighbor_f_scores_1 = _mm256_add_pd(neighbor_f_scores_1, neighbor_g_scores_1);
-        }
+        __m256 neighbors_x = _mm256_set_ps(neighbors[7].x, neighbors[6].x, neighbors[5].x, neighbors[4].x, neighbors[3].x, neighbors[2].x, neighbors[1].x, neighbors[0].x);
+        __m256 neighbors_y = _mm256_set_ps(neighbors[7].y, neighbors[6].y, neighbors[5].y, neighbors[4].y, neighbors[3].y, neighbors[2].y, neighbors[1].y, neighbors[0].y);
+        __m256 diff_x = _mm256_sub_ps(neighbors_x, target_x);
+        __m256 diff_y = _mm256_sub_ps(neighbors_y, target_y);
+        __m256 diff_x_sq = _mm256_mul_ps(diff_x, diff_x);
+        __m256 diff_y_sq = _mm256_mul_ps(diff_y, diff_y);
+        __m256 radicand = _mm256_add_ps(diff_x_sq, diff_y_sq);
+        __m256 neighbor_f_scores = _mm256_sqrt_ps(radicand);
+        neighbor_f_scores = _mm256_add_ps(neighbor_f_scores, neighbor_g_scores);
 
         // Serial part
-        bool neighbor_checks[8] = {};
         for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
             const v2 &neighbor = neighbors[neighbor_index];
@@ -386,40 +390,20 @@ float FastPathFind(const U64* pWalls)
             }
             U64 wall_chunk_bits = pWalls[neighbor.index() / 64];
             U64 mask = 1ULL << (neighbor.index() % 64);
-            bool neighbor_is_wall = wall_chunk_bits & mask;
-            
-            if(neighbor_is_wall)
+            if(wall_chunk_bits & mask)
             {
                 continue;
             }
-            neighbor_checks[neighbor_index] = true;
-        }
-        for(int neighbor_index = 0; neighbor_index < 4; neighbor_index++)
-        {
-            if(neighbor_checks[neighbor_index])
+
+            float new_g_score = neighbor_g_scores.m256_f32[neighbor_index];
+            if(new_g_score < g_scores[neighbor.index()])
             {
-                const v2 &neighbor = neighbors[neighbor_index];
-                double new_g_score = neighbor_g_scores_0.m256d_f64[neighbor_index];
-                if(new_g_score < g_scores[neighbor.index()])
-                {
-                    g_scores[neighbor.index()] = new_g_score;
-                    open_list_push(open_list, {neighbor, neighbor_f_scores_0.m256d_f64[neighbor_index]});
-                }
+                g_scores[neighbor.index()] = new_g_score;
+                came_from[neighbor.index()] = current.pos;
+                open_list_push(open_list, {neighbor, neighbor_f_scores.m256_f32[neighbor_index]});
             }
         }
-        for(int neighbor_index = 4; neighbor_index < 8; neighbor_index++)
-        {
-            if(neighbor_checks[neighbor_index])
-            {
-                const v2 &neighbor = neighbors[neighbor_index];
-                double new_g_score = neighbor_g_scores_1.m256d_f64[neighbor_index - 4];
-                if(new_g_score < g_scores[neighbor.index()])
-                {
-                    g_scores[neighbor.index()] = new_g_score;
-                    open_list_push(open_list, {neighbor, neighbor_f_scores_1.m256d_f64[neighbor_index - 4]});
-                }
-            }
-        }
+        
 #else
         // Calculate neighbor positions
         v2 neighbors[] =
@@ -429,11 +413,11 @@ float FastPathFind(const U64* pWalls)
             {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
         };
         // Calculate neighbor distances
-        double neighbor_distances[] =
+        float neighbor_distances[] =
         {
-            SQRT_2, 1.0, SQRT_2, 
-            1.0,         1.0,
-            SQRT_2, 1.0, SQRT_2
+            SQRT_2, 1.0f, SQRT_2, 
+            1.0f,         1.0f,
+            SQRT_2, 1.0f, SQRT_2
         };
         for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
@@ -448,11 +432,12 @@ float FastPathFind(const U64* pWalls)
             {
                 continue;
             }
-            double g_score = g_scores[current.pos.index()] + neighbor_distances[neighbor_index];
+            float g_score = g_scores[current.pos.index()] + neighbor_distances[neighbor_index];
             if(g_score < g_scores[neighbor.index()])
             {
                 float f_score = g_score + heuristic(neighbor, target);
                 g_scores[neighbor.index()] = g_score;
+                came_from[neighbor.index()] = current.pos;
                 open_list_push(open_list, {neighbor, f_score});
             }
         }
