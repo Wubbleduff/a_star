@@ -109,7 +109,8 @@ void open_list_push(OpenList *open_list, Node node)
 {
     U64 start_time = __rdtsc();
 
-    U32 bucket_index = (U32)((node.f_score - MIN_POSSIBLE_F_SCORE) * 50.0f);
+    float remapped_f_score = (node.f_score - MIN_POSSIBLE_F_SCORE) * 50.0f;
+    U32 bucket_index = (U32)remapped_f_score;
 
     if(bucket_index >= open_list->buckets.size())
     {
@@ -204,6 +205,8 @@ struct OpenList
 
 void open_list_push(OpenList *open_list, Node to_push)
 {
+    U64 start_time = __rdtsc();
+
     bool found_on_open_list = false;
     for(Node &node : open_list->nodes)
     {
@@ -218,22 +221,29 @@ void open_list_push(OpenList *open_list, Node to_push)
     {
         open_list->nodes.push_back(to_push);
     }
+
+    perf_stats.push_latencies.push_back(__rdtsc() - start_time);
 }
 
 Node open_list_pop(OpenList *open_list)
 {
+    U64 start_time = __rdtsc();
+
     Node current = open_list->nodes[0];
-    for(const Node &node : open_list->nodes)
+    U32 current_i = 0;
+    for(U32 i = 1; i < open_list->nodes.size(); i++)
     {
-        if(node.f_score < current.f_score)
+        if(open_list->nodes[i].f_score < current.f_score)
         {
-            current = node;
+            current = open_list->nodes[i];
+            current_i = i;
         }
     }
     // Remove current from the open list
-    for(Node &node : open_list->nodes) if(node.pos == current.pos) { std::swap(node, open_list->nodes.back()); break; }
+    std::swap(open_list->nodes[current_i], open_list->nodes.back());
     open_list->nodes.pop_back();
 
+    perf_stats.pop_latencies.push_back(__rdtsc() - start_time);
     return current;
 }
 
@@ -355,23 +365,40 @@ float FastPathFind(const U64* pWalls)
 
 #define WIDE 1
 #if WIDE
+        // Distances from the current node to it's neighbors
         __m256 neighbor_distances = _mm256_set_ps(SQRT_2, 1.0f, SQRT_2, 1.0f, 1.0f, SQRT_2, 1.0f, SQRT_2);
 
+        // Current node and neighbor's g scores
         __m256 current_g_score = _mm256_set1_ps(g_scores[current.pos.index()]);
         __m256 neighbor_g_scores = _mm256_add_ps(current_g_score, neighbor_distances);
         
+        // Neighbor coordinates
+        __m256i neighbors_x = _mm256_set_epi32(current.pos.x + 1, current.pos.x, current.pos.x - 1, current.pos.x + 1, current.pos.x - 1, current.pos.x + 1, current.pos.x, current.pos.x - 1);
+        __m256i neighbors_y = _mm256_set_epi32(current.pos.y - 1, current.pos.y - 1, current.pos.y - 1, current.pos.y, current.pos.y, current.pos.y + 1, current.pos.y + 1, current.pos.y + 1);
+
+        // Create a mask for out of bounds and wall neighbors
+        __m256i cols_wide = _mm256_set1_epi32(kCols);
+        __m256i rows_wide = _mm256_set1_epi32(kRows);
+        __m256i neighbors_oob_left = _mm256_cmpgt_epi32(neighbors_x, _mm256_set1_epi32(-1));
+        __m256i neighbors_oob_right = _mm256_cmpgt_epi32(cols_wide, neighbors_x);
+        __m256i neighbors_oob_bottom = _mm256_cmpgt_epi32(neighbors_y, _mm256_set1_epi32(-1));
+        __m256i neighbors_oob_top = _mm256_cmpgt_epi32(rows_wide, neighbors_y);
+        __m256i neighbors_valid_mask = _mm256_and_si256(neighbors_oob_left, neighbors_oob_right);
+        neighbors_valid_mask = _mm256_and_si256(neighbors_valid_mask, neighbors_oob_top);
+        neighbors_valid_mask = _mm256_and_si256(neighbors_valid_mask, neighbors_oob_bottom);
+        // Calculate the neighbor indices
+        __m256i neighbor_indices = _mm256_mullo_epi16(neighbors_y, cols_wide);
+        neighbor_indices = _mm256_add_epi32(neighbor_indices, neighbors_x);
+        // Mask against walls
+        // __m256i
+
+        // Calculate the neighbor's heuristic costs
         __m256 target_x = _mm256_set1_ps(target.x);
         __m256 target_y = _mm256_set1_ps(target.y);
-        v2 neighbors[] =
-        {
-            {current.pos.x - 1, current.pos.y + 1}, {current.pos.x, current.pos.y + 1}, {current.pos.x + 1, current.pos.y + 1},
-            {current.pos.x - 1, current.pos.y    },                                     {current.pos.x + 1, current.pos.y    },
-            {current.pos.x - 1, current.pos.y - 1}, {current.pos.x, current.pos.y - 1}, {current.pos.x + 1, current.pos.y - 1}
-        };
-        __m256 neighbors_x = _mm256_set_ps(neighbors[7].x, neighbors[6].x, neighbors[5].x, neighbors[4].x, neighbors[3].x, neighbors[2].x, neighbors[1].x, neighbors[0].x);
-        __m256 neighbors_y = _mm256_set_ps(neighbors[7].y, neighbors[6].y, neighbors[5].y, neighbors[4].y, neighbors[3].y, neighbors[2].y, neighbors[1].y, neighbors[0].y);
-        __m256 diff_x = _mm256_sub_ps(neighbors_x, target_x);
-        __m256 diff_y = _mm256_sub_ps(neighbors_y, target_y);
+        __m256 neighbors_xf = _mm256_cvtepi32_ps(neighbors_x);
+        __m256 neighbors_yf = _mm256_cvtepi32_ps(neighbors_y);
+        __m256 diff_x = _mm256_sub_ps(neighbors_xf, target_x);
+        __m256 diff_y = _mm256_sub_ps(neighbors_yf, target_y);
         __m256 diff_x_sq = _mm256_mul_ps(diff_x, diff_x);
         __m256 diff_y_sq = _mm256_mul_ps(diff_y, diff_y);
         __m256 radicand = _mm256_add_ps(diff_x_sq, diff_y_sq);
@@ -381,26 +408,26 @@ float FastPathFind(const U64* pWalls)
         // Serial part
         for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
-            const v2 &neighbor = neighbors[neighbor_index];
-            bool neighbor_oob_cols = neighbor.x >= kCols;
-            bool neighbor_oob_rows = neighbor.y >= kRows;
-            if(neighbor_oob_cols || neighbor_oob_rows)
+            U32 neighbor_i = neighbor_indices.m256i_i32[neighbor_index];
+            if(!neighbors_valid_mask.m256i_i32[neighbor_index])
             {
                 continue;
             }
-            U64 wall_chunk_bits = pWalls[neighbor.index() / 64];
-            U64 mask = 1ULL << (neighbor.index() % 64);
+            U64 wall_chunk_bits = pWalls[neighbor_i / 64];
+            U64 mask = 1ULL << (neighbor_i % 64);
             if(wall_chunk_bits & mask)
             {
                 continue;
             }
 
             float new_g_score = neighbor_g_scores.m256_f32[neighbor_index];
-            if(new_g_score < g_scores[neighbor.index()])
+            if(new_g_score < g_scores[neighbor_i])
             {
-                g_scores[neighbor.index()] = new_g_score;
-                came_from[neighbor.index()] = current.pos;
-                open_list_push(open_list, {neighbor, neighbor_f_scores.m256_f32[neighbor_index]});
+                g_scores[neighbor_i] = new_g_score;
+                came_from[neighbor_i] = current.pos;
+                U32 neighbor_x = (U32)neighbors_x.m256i_i32[neighbor_index];
+                U32 neighbor_y = (U32)neighbors_y.m256i_i32[neighbor_index];
+                open_list_push(open_list, {v2{neighbor_x, neighbor_y}, neighbor_f_scores.m256_f32[neighbor_index]});
             }
         }
         
