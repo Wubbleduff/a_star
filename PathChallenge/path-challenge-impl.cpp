@@ -105,7 +105,7 @@ struct OpenList
     U32 cheapest_bucket;
 };
 
-void open_list_push(OpenList *open_list, Node node)
+__declspec(noinline) void open_list_push(OpenList *open_list, Node node)
 {
     U64 start_time = __rdtsc();
 
@@ -319,8 +319,8 @@ void post_process()
 float FastPathFind(const U64* pWalls)
 {
     // Initialize grid
-    float g_scores[kCols * kRows] = {};
-    v2 came_from[kCols * kRows] = {};
+    static float g_scores[kCols * kRows] = {};
+    static v2 came_from[kCols * kRows] = {};
     for(U32 r = 0; r < kRows; r++)
     {
         for(U32 c = 0; c < kCols; c++)
@@ -389,8 +389,28 @@ float FastPathFind(const U64* pWalls)
         // Calculate the neighbor indices
         __m256i neighbor_indices = _mm256_mullo_epi16(neighbors_y, cols_wide);
         neighbor_indices = _mm256_add_epi32(neighbor_indices, neighbors_x);
+
+
         // Mask against walls
-        // __m256i
+        __m256i clamped_neighbor_indices = _mm256_min_epi32(_mm256_max_epi32(neighbor_indices, _mm256_set1_epi32(0)), _mm256_set1_epi32(kCells));
+        __m256i wall_chunk_offset = _mm256_srli_epi32(clamped_neighbor_indices, 5);
+        U32 *pWalls32 = (U32 *)pWalls;
+        __m256i wall_chunk_bits = _mm256_set_epi32(
+            pWalls32[wall_chunk_offset.m256i_i32[7]],
+            pWalls32[wall_chunk_offset.m256i_i32[6]],
+            pWalls32[wall_chunk_offset.m256i_i32[5]],
+            pWalls32[wall_chunk_offset.m256i_i32[4]],
+            pWalls32[wall_chunk_offset.m256i_i32[3]],
+            pWalls32[wall_chunk_offset.m256i_i32[2]],
+            pWalls32[wall_chunk_offset.m256i_i32[1]],
+            pWalls32[wall_chunk_offset.m256i_i32[0]]
+        );
+        __m256i wall_mask_bit_offset =  _mm256_sub_epi32(neighbor_indices, _mm256_mullo_epi16(_mm256_set1_epi32(32), _mm256_srli_epi32(neighbor_indices, 5)));
+        __m256i wall_mask =  _mm256_sllv_epi32(_mm256_set1_epi32(1), wall_mask_bit_offset);
+        wall_mask = _mm256_and_si256(wall_chunk_bits, wall_mask);
+        wall_mask = _mm256_cmpeq_epi32(wall_mask, _mm256_set1_epi32(0));
+
+        neighbors_valid_mask = _mm256_and_si256(neighbors_valid_mask, wall_mask);
 
         // Calculate the neighbor's heuristic costs
         __m256 target_x = _mm256_set1_ps(target.x);
@@ -408,19 +428,13 @@ float FastPathFind(const U64* pWalls)
         // Serial part
         for(int neighbor_index = 0; neighbor_index < 8; neighbor_index++)
         {
-            U32 neighbor_i = neighbor_indices.m256i_i32[neighbor_index];
             if(!neighbors_valid_mask.m256i_i32[neighbor_index])
-            {
-                continue;
-            }
-            U64 wall_chunk_bits = pWalls[neighbor_i / 64];
-            U64 mask = 1ULL << (neighbor_i % 64);
-            if(wall_chunk_bits & mask)
             {
                 continue;
             }
 
             float new_g_score = neighbor_g_scores.m256_f32[neighbor_index];
+            U32 neighbor_i = neighbor_indices.m256i_i32[neighbor_index];
             if(new_g_score < g_scores[neighbor_i])
             {
                 g_scores[neighbor_i] = new_g_score;
